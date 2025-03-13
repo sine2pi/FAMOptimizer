@@ -3,6 +3,29 @@ Frequency-Adaptive Momentum optimizer with parameter-specific handlers. + FAMSch
 
 Beta . Working. I'm surprised too.
 
+Usage example
+
+param_groups = get_parameter_groups(model=model, lr=0.001, weight_decay=1e-6)
+
+optimizer = FAMOptimizer(
+    params=param_groups,
+    beta=0.99,
+    n_bands=10,
+    fam_start_step=100,
+    layer_boost=True,
+    min_size=128,
+    debug=True,
+    weight_decay=0.0025,
+    lr=0.001,
+)
+
+scheduler = FAMScheduler2(
+    optimizer=optimizer,
+    warmup_steps=100,
+    total_steps=10000,
+    decay_start_step=100
+)
+
 ```python
 
 
