@@ -31,7 +31,7 @@ By applying distinct momentum factors to different frequency bands in parameter 
 
 
 Usage example
-
+```
 param_groups = get_parameter_groups(model=model, lr=0.001, weight_decay=1e-6)
 
 optimizer = FAMOptimizer(
@@ -54,7 +54,7 @@ scheduler = FAMScheduler2(
 )
 
 
-
+```
 
 ```python
 
