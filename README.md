@@ -2,7 +2,7 @@
 Frequency-Adaptive Momentum optimizer with parameter-specific handlers. + FAMScheduler.
 
 Beta . Working. I'm surprised too.
-
+Proof of concept. 
 
 An experimental approach specifically designed for speech recognition tasks, FAM adapts momentum based on the frequency characteristics of gradient updates.
 
