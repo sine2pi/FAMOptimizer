@@ -46,7 +46,7 @@ optimizer = FAMOptimizer(
     lr=0.001,
 )
 
-scheduler = FAMScheduler2(
+scheduler = FAMScheduler(
     optimizer=optimizer,
     warmup_steps=100,
     total_steps=10000,
