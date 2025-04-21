@@ -1,8 +1,5 @@
 # FAMOptimizer
-Frequency-Adaptive Momentum optimizer with parameter-specific handlers. + FAMScheduler.
-
-Beta . Working. I'm surprised too.
-Proof of concept. 
+Frequency-Adaptive Momentum optimizer with parameter-specific handlers. + FAMScheduler. Work in progress.
 
 This optimizer is specifically for ASR type models but works well without the FAM which can be controlled (turned on) by step count. fam_start_step=100
 
