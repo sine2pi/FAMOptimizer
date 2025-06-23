@@ -1,9 +1,10 @@
 import torch
-import torch.nn as nn
 import numpy as np
 import json
 import os
 from datetime import datetime
+from torch.optim.lr_scheduler import _LRScheduler
+import math
 
 class FrequencyHandler:
     """Base class for parameter-specific frequency analysis functions"""
@@ -15,6 +16,7 @@ class FrequencyHandler:
         
         if freq_power.sum() > 0:
             freq_power = freq_power / (freq_power.sum() + eps)
+        
         band_size = freq_power.shape[0] // n_bands
         if band_size <= 0:
             return [0.0] * n_bands
@@ -49,6 +51,7 @@ class ConvFrequencyHandler(FrequencyHandler):
         
         if freq_power.sum() > 0:
             freq_power = freq_power / (freq_power.sum() + eps)
+        
         band_powers = []
         total_freqs = freq_power.shape[0]
         
@@ -69,8 +72,10 @@ class ConvFrequencyHandler(FrequencyHandler):
     def get_adaptive_momentum(self, band_values, base_alpha):
         """Convolutional layers benefit from more smoothing in mid-frequencies"""
         n_bands = len(band_values)
+        
         mid_freq_activity = sum(band_values[n_bands//4:(3*n_bands)//4])
         high_freq_activity = sum(band_values[(3*n_bands)//4:])
+        
         if mid_freq_activity > 0.4:
             return min(0.97, base_alpha + 0.07)
         elif high_freq_activity > 0.3:
@@ -86,8 +91,10 @@ class AttentionFrequencyHandler(FrequencyHandler):
         
         if freq_power.sum() > 0:
             freq_power = freq_power / (freq_power.sum() + eps)
+        
         band_powers = []
         half_bands = n_bands // 2
+        
         low_band_size = (freq_power.shape[0] // 2) // half_bands
         for i in range(half_bands):
             start_idx = i * low_band_size
@@ -97,6 +104,7 @@ class AttentionFrequencyHandler(FrequencyHandler):
                 band_powers.append(band_power)
             else:
                 band_powers.append(0.0)
+                
         high_band_size = (freq_power.shape[0] - (freq_power.shape[0] // 2)) // (n_bands - half_bands)
         for i in range(half_bands, n_bands):
             start_idx = (freq_power.shape[0] // 2) + (i - half_bands) * high_band_size
@@ -112,7 +120,9 @@ class AttentionFrequencyHandler(FrequencyHandler):
     def get_adaptive_momentum(self, band_values, base_alpha):
         """Custom adaptive momentum for attention layers"""
         n_bands = len(band_values)
+        
         max_band_idx = np.argmax(band_values)
+        
         if max_band_idx < n_bands // 4:
             return max(0.85, base_alpha - 0.05)
         elif max_band_idx > 3*n_bands // 4:
@@ -125,6 +135,7 @@ class EmbeddingFrequencyHandler(FrequencyHandler):
     def get_adaptive_momentum(self, band_values, base_alpha):
         """Embeddings often benefit from very stable updates"""
         n_bands = len(band_values)
+        
         high_freq_activity = sum(band_values[(3*n_bands)//4:])
         if high_freq_activity > 0.2:
             return min(0.98, base_alpha + 0.08)
@@ -141,7 +152,7 @@ class FAMOptimizer(torch.optim.Optimizer):
         debug_interval (int, optional): Steps between debug dumps (default: 1000)
     """
     def __init__(self, params, lr=1e-3, alpha=0.9, beta=0.99, eps=1e-8,
-                 weight_decay=0.0, n_bands=8, fam_start_step=100,
+                 weight_decay=0, n_bands=8, fam_start_step=100,
                  layer_boost=True, min_size=256, debug=False,
                  debug_dir='./fam_debug', debug_interval=1000):
         defaults = dict(lr=lr, alpha=alpha, beta=beta, eps=eps,
@@ -150,6 +161,7 @@ class FAMOptimizer(torch.optim.Optimizer):
                        layer_boost=layer_boost, min_size=min_size)
         self.debug = debug
         self.debug_info = {} if debug else None
+        
         self.debug_dir = debug_dir
         self.debug_interval = debug_interval
         self.last_dump_step = 0
@@ -173,14 +185,22 @@ class FAMOptimizer(torch.optim.Optimizer):
                     "parameters": {},
                     "steps_recorded": []
                 }, f, indent=2)
+            print(f"FAM debug info will be saved to {self.debug_file}")
+        
         self.handlers = {
             "default": FrequencyHandler(),
             "conv": ConvFrequencyHandler(),
             "attention": AttentionFrequencyHandler(),
             "embedding": EmbeddingFrequencyHandler()
         }
+        
         param_groups = self._add_handlers_to_groups(params)
         super(FAMOptimizer, self).__init__(params=param_groups, defaults=defaults)
+        
+        print(f"FAM Optimizer initialized with parameter-specific handlers:") 
+        print(f"  lr={lr}, alpha={alpha}, beta={beta}, n_bands={n_bands}")
+        print(f"  fam_start_step={fam_start_step}, min_size={min_size}")
+    
     def _add_handlers_to_groups(self, params):
         """Add appropriate handlers to parameter groups based on type"""
         if isinstance(params, list) and all(isinstance(pg, dict) for pg in params):
@@ -209,11 +229,14 @@ class FAMOptimizer(torch.optim.Optimizer):
         """Save the current debug information to file"""
         if not self.debug or not hasattr(self, 'debug_file'):
             return
+        
         current_step = max([self.state[p]['step'] for p in self.state], default=0)
+        
         if force or (current_step - self.last_dump_step >= self.debug_interval):
             try:
                 with open(self.debug_file, 'r') as f:
                     debug_data = json.load(f)
+                
                 debug_data["steps_recorded"].append(current_step)
                 
                 for param_name, param_info in self.debug_info.items():
@@ -224,15 +247,18 @@ class FAMOptimizer(torch.optim.Optimizer):
                             "bands": [],
                             "alpha": []
                         }
+                    
                     last_recorded = len(debug_data["parameters"][param_name]["steps"])
                     if last_recorded < len(param_info['steps']):
                         debug_data["parameters"][param_name]["steps"].extend(param_info['steps'][last_recorded:])
                         debug_data["parameters"][param_name]["bands"].extend(param_info['bands'][last_recorded:])
                         debug_data["parameters"][param_name]["alpha"].extend(param_info['alpha'][last_recorded:])
+                
                 with open(self.debug_file, 'w') as f:
                     json.dump(debug_data, f)
                 
                 self.last_dump_step = current_step
+                
                 for param_info in self.debug_info.values():
                     param_info['steps'] = param_info['steps'][-10:]
                     param_info['bands'] = param_info['bands'][-10:]
@@ -276,6 +302,7 @@ class FAMOptimizer(torch.optim.Optimizer):
                 beta = group['beta']
                 lr = group['lr']
                 n_bands = group['n_bands']
+                
                 handler = self.get_handler(group)
                 
                 should_apply_fam = (
@@ -295,10 +322,13 @@ class FAMOptimizer(torch.optim.Optimizer):
                                 grad_sample = grad.flatten()[sample_idx]
                         else:
                             grad_sample = grad.flatten()
+                        
                         band_powers = handler.analyze(grad_sample, n_bands, group['eps'])
+                        
                         if state['step'] <= 10 and p_idx == 0:
                             print(f"Step {state['step']}: Found {len(band_powers)} frequency bands")
                             print(f"Band powers: {[f'{v:.4f}' for v in band_powers]}")
+                        
                         for i, power in enumerate(band_powers):
                             band_key = f'band_{i}'
                             if band_key not in state['freq_history']:
@@ -308,8 +338,10 @@ class FAMOptimizer(torch.optim.Optimizer):
                                     beta * state['freq_history'][band_key] +
                                     (1-beta) * power
                                 )
+                        
                         band_values = [state['freq_history'].get(f'band_{i}', 0) 
                                       for i in range(n_bands)]
+                        
                         effective_alpha = handler.get_adaptive_momentum(band_values, alpha)
                         
                         if self.debug:
@@ -326,6 +358,7 @@ class FAMOptimizer(torch.optim.Optimizer):
                                 self.debug_info[param_name]['steps'].append(state['step'])
                                 self.debug_info[param_name]['bands'].append(band_values)
                                 self.debug_info[param_name]['alpha'].append(effective_alpha)
+                        
                         exp_avg.mul_(effective_alpha).add_(grad, alpha=1-effective_alpha)
                     except Exception as e:
                         import traceback
@@ -337,6 +370,7 @@ class FAMOptimizer(torch.optim.Optimizer):
                         exp_avg.mul_(alpha).add_(grad, alpha=1-alpha)
                 else:
                     exp_avg.mul_(alpha).add_(grad, alpha=1-alpha)
+                
                 p.add_(exp_avg, alpha=-lr)
         
         if self.debug:
@@ -354,6 +388,7 @@ def get_parameter_groups(model, lr=1e-3, weight_decay=0.0):
     Create parameter groups for FAMOptimizer with appropriate handlers based on layer type
     """
     param_groups = []
+    
     conv_params = []
     conv_names = []
     
@@ -368,6 +403,7 @@ def get_parameter_groups(model, lr=1e-3, weight_decay=0.0):
     
     other_params = []
     other_names = []
+    
     for name, param in model.named_parameters():
         if not param.requires_grad:
             continue
@@ -387,6 +423,7 @@ def get_parameter_groups(model, lr=1e-3, weight_decay=0.0):
         else:
             other_params.append(param)
             other_names.append(name)
+    
     if conv_params:
         param_groups.append({
             'params': conv_params,
@@ -444,11 +481,7 @@ def get_parameter_groups(model, lr=1e-3, weight_decay=0.0):
     
     return param_groups
 
-import torch
-from torch.optim.lr_scheduler import _LRScheduler
-import math
-
-class FAMSchedulerb(_LRScheduler):
+class FAMScheduler(_LRScheduler):
     """
     Scheduler with linear warmup followed by cosine annealing.
     
@@ -475,8 +508,6 @@ class FAMSchedulerb(_LRScheduler):
                    (1 + math.cos(math.pi * (self.last_epoch - self.warmup_epochs) / 
                                 (self.max_epochs - self.warmup_epochs))) / 2
                    for base_lr in self.base_lrs]
-import torch
-import math
 
 class SimpleFAM(torch.optim.Optimizer):
     """
@@ -510,21 +541,25 @@ class SimpleFAM(torch.optim.Optimizer):
                 state['step'] += 1
                 exp_avg = state['exp_avg']
                 alpha = group['alpha']
+                
                 if p.numel() > 1000 and state['step'] > 100:
                     grad_sample = p.grad.flatten()[:min(1000, p.numel())]
                     freq = torch.fft.rfft(grad_sample.float())
                     power = torch.abs(freq)
+                    
                     half = power.shape[0] // 2
                     high_ratio = power[half:].sum() / (power.sum() + 1e-8)
+                    
                     effective_alpha = min(0.98, alpha + 0.05 * high_ratio)
                     exp_avg.mul_(effective_alpha).add_(p.grad, alpha=1-effective_alpha)
                 else:
                     exp_avg.mul_(alpha).add_(p.grad, alpha=1-alpha)
+                
                 p.add_(exp_avg, alpha=-group['lr'])
         
         return loss
-    
-class FAMScheduler(torch.optim.lr_scheduler._LRScheduler):
+
+class FAMScheduler2(torch.optim.lr_scheduler._LRScheduler):
     """
     Step-based learning rate scheduler for FAM optimizer
     with warmup and cosine annealing.
@@ -537,7 +572,7 @@ class FAMScheduler(torch.optim.lr_scheduler._LRScheduler):
         self.decay_start_step = decay_start_step if decay_start_step is not None else warmup_steps
         self.warmup_start_lr = warmup_start_lr
         self.eta_min = eta_min
-        super(FAMScheduler, self).__init__(optimizer, last_epoch)
+        super(FAMScheduler2, self).__init__(optimizer, last_epoch)
     
     def get_lr(self):
         if self.last_epoch < self.warmup_steps:
